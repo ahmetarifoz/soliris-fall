@@ -1,0 +1,39 @@
+# Python artifacts
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+.eggs/
+
+# Virtual environments
+venv/
+.env/
+.venv/
+
+# IDEs / Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+*.DS_Store
+Thumbs.db
+
+# Runtime outputs
+out.mp4
+*.log
+
+# Local configuration overrides
+config.yaml
+config.local.yaml
+
+# Model weights and large assets
+models/
+!models/.gitkeep
+videos/
+!videos/.gitkeep
+
+# Pip cache
+pip-wheel-metadata/
+*.whl

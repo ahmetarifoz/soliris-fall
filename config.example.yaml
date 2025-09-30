@@ -1,0 +1,52 @@
+# Copy this file to config.yaml (or config.local.yaml) and fill in your environment specifics.
+app:
+  model_path: models/yolo11m-pose.pt
+  device: 0  # or "cpu"
+  enable_hud: true
+  save_path: out.mp4
+  default_fps: 25
+  max_tracks: 8
+  rtsp_reconnect: true
+  rtsp_max_retries: 6
+  rtsp_retry_delay: 1.0
+  rtsp_backend: ffmpeg
+  rtsp_transport: udp
+  rtsp_drop_frames: 5
+  rtsp_ffmpeg_options:
+    stimeout: 2000000
+    fflags: nobuffer
+    flags: low_delay
+    probesize: 32
+    analyzeduration: 0
+
+detect:
+  conf: 0.16
+  iou: 0.55
+  track_persist: true
+  confirm_sec: 0.2
+  recover_sec: 0.7
+  recover_angle: 45.0
+  cooldown_sec: 0.4
+  alert_hold: 4.0
+  temporal_window: 60
+  temporal_min_hits: 3
+  angle_th: 46
+  still_bls: 0.12
+  drop_rel: 1.0
+  prune_sec: 1.2
+  fall_latch_sec: 1.5
+  pelvis_floor_frac: 0.25
+  recover_lift_rel: 0.25
+  frame_skip: 0
+  candidate_alert_sec: 10.0
+  fallen_alert_sec: 5.0
+
+webhook:
+  url: "https://example.com/webhook"
+  hmac_secret: ""
+  timeout_seconds: 3.0
+  verify_ssl: true
+  cooldown_seconds: 5.0
+
+streams:
+  - rtsp://USER:PASS@CAMERA_HOST:554/stream
