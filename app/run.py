@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import time
 from pathlib import Path
@@ -9,9 +10,12 @@ from typing import Any, Optional, Tuple
 
 import cv2
 
-from .config import AppSection, Config, load_config
+from . import logger
+from .alert import send_op500_trigger, send_webhook
+from .config import AppSection, Config, load_config, resolve_stream_ingest
 from .detector import FallDetector
 from .hud import HUD
+from .stream import StreamReader
 from .webhook import WebhookClient
 
 WINDOW_NAME = "Fall Detector"
@@ -101,23 +105,67 @@ def _read_frame(
 def run(config_path: str | Path = "config.yaml") -> None:
     cfg = load_config(config_path)
 
-    source_spec = cfg.streams[0]
-    source = _resolve_source(source_spec)
+    # Get first stream config (like fsdapp)
+    stream_cfg = cfg.streams[0]
+    source = _resolve_source(stream_cfg.source)
     is_rtsp = _is_rtsp_source(source)
     ffmpeg_options = _build_ffmpeg_options(cfg.app)
+    
+    # Resolve effective ingest settings (like fsdapp)
+    ingest_settings = resolve_stream_ingest(cfg, stream_cfg)
+    
+    # Use StreamReader if RTP loopback is enabled
+    use_stream_reader = stream_cfg.rtp_loopback_enabled
+    sr: Optional[StreamReader] = None
+    cap: Optional[cv2.VideoCapture] = None
+    
+    if use_stream_reader:
+        sr = StreamReader(
+            source=stream_cfg.source,
+            reconnect_delay=ingest_settings["reconnect_seconds"],
+            width=ingest_settings["width"],
+            height=ingest_settings["height"],
+            backend=ingest_settings["backend"],
+            ffmpeg_hw=ingest_settings["ffmpeg_hw"],
+            queue_size=ingest_settings["queue_size"],
+            rtp_output_port=stream_cfg.rtp_port,
+        )
+        # Configure OP500 if enabled
+        if cfg.op500 and cfg.op500.enabled:
+            sr.op500_enabled = True
+            sr.op500_base_url = cfg.op500.base_url
+        fps = cfg.app.default_fps
+    else:
+        cap = _create_capture(
+            source,
+            cfg.app.rtsp_backend,
+            is_rtsp=is_rtsp,
+            ffmpeg_options=ffmpeg_options,
+        )
+        if not cap.isOpened():
+            raise RuntimeError(f"Cannot open source: {stream_cfg.source}")
+        fps = cap.get(cv2.CAP_PROP_FPS) or cfg.app.default_fps
 
-    cap = _create_capture(
-        source,
-        cfg.app.rtsp_backend,
-        is_rtsp=is_rtsp,
-        ffmpeg_options=ffmpeg_options,
-    )
-    if not cap.isOpened():
-        raise RuntimeError(f"Cannot open source: {source_spec}")
+    writer = None
+    if cap:
+        writer, fps = _ensure_writer(cfg, cap)
 
-    writer, fps = _ensure_writer(cfg, cap)
-
-    detector = FallDetector(cfg, camera_id=str(source_spec))
+    # Use camera_id from stream config, fallback to source
+    camera_id = stream_cfg.camera_id or stream_cfg.source
+    detector = FallDetector(cfg, camera_id=camera_id)
+    
+    # Configure OP500 on detector
+    if cfg.op500 and cfg.op500.enabled:
+        detector.op500_enabled = True
+        detector.op500_base_url = cfg.op500.base_url
+        detector.op500_rtp_auto_close_seconds = cfg.op500.rtp_auto_close_seconds
+        if stream_cfg.rtp_port:
+            detector.op500_rtp_port = stream_cfg.rtp_port
+    
+    # Link stream reader to detector for RTP control
+    if sr:
+        detector.stream_reader = sr
+    
     hud = HUD(max_tracks=cfg.app.max_tracks) if cfg.app.enable_hud else None
     webhook = WebhookClient(cfg.webhook)
 
@@ -128,44 +176,69 @@ def run(config_path: str | Path = "config.yaml") -> None:
         cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
         cv2.resizeWindow(WINDOW_NAME, 1280, 720)
 
-    print("Running. Press ESC to quit.")
+    logger.info(f"Starting fall detection on {stream_cfg.source}")
+    logger.info("Press ESC to quit.")
+
+    async def maybe_alert(event, trigger_op500: bool):
+        """Send webhook and optionally trigger OP500."""
+        payload = event.to_payload()
+        await send_webhook(cfg.webhook.url, payload, cfg.webhook.hmac_secret or "")
+        
+        if trigger_op500 and cfg.op500 and cfg.op500.enabled and stream_cfg.rtp_port:
+            await send_op500_trigger(
+                base_url=cfg.op500.base_url,
+                port=stream_cfg.rtp_port,
+                event_type="FALL",
+                delay_sec=5
+            )
 
     try:
+        # Use StreamReader frames generator or OpenCV capture
+        frame_source = sr.frames() if sr else None
+        
         while True:
-            ok, frame = _read_frame(
-                cap,
-                drop_frames=cfg.app.rtsp_drop_frames,
-                is_rtsp=is_rtsp,
-            )
-            if not ok or frame is None:
-                if is_rtsp and cfg.app.rtsp_reconnect:
-                    print("Frame read failed; attempting RTSP reconnect...")
-                    cap.release()
-                    reconnected = False
-                    for attempt in range(1, cfg.app.rtsp_max_retries + 1):
-                        time.sleep(cfg.app.rtsp_retry_delay)
-                        cap = _create_capture(
-                            source,
-                            cfg.app.rtsp_backend,
-                            is_rtsp=True,
-                            ffmpeg_options=ffmpeg_options,
-                        )
-                        if cap.isOpened():
-                            fps = cap.get(cv2.CAP_PROP_FPS) or cfg.app.default_fps
-                            if writer is None and cfg.app.save_path:
-                                writer, fps = _ensure_writer(cfg, cap)
-                            reconnected = True
-                            skip_cursor = 0
-                            print(f"RTSP stream reconnected on attempt {attempt}.")
+            if sr:
+                try:
+                    frame = next(frame_source)
+                except StopIteration:
+                    break
+            else:
+                ok, frame = _read_frame(
+                    cap,
+                    drop_frames=cfg.app.rtsp_drop_frames,
+                    is_rtsp=is_rtsp,
+                )
+                if not ok or frame is None:
+                    if is_rtsp and cfg.app.rtsp_reconnect:
+                        logger.stream_disconnected(stream_cfg.source)
+                        cap.release()
+                        reconnected = False
+                        for attempt in range(1, cfg.app.rtsp_max_retries + 1):
+                            logger.stream_reconnecting(stream_cfg.source, attempt)
+                            time.sleep(cfg.app.rtsp_retry_delay)
+                            cap = _create_capture(
+                                source,
+                                cfg.app.rtsp_backend,
+                                is_rtsp=True,
+                                ffmpeg_options=ffmpeg_options,
+                            )
+                            if cap.isOpened():
+                                fps = cap.get(cv2.CAP_PROP_FPS) or cfg.app.default_fps
+                                if writer is None and cfg.app.save_path:
+                                    writer, fps = _ensure_writer(cfg, cap)
+                                reconnected = True
+                                skip_cursor = 0
+                                logger.stream_connected(stream_cfg.source)
+                                break
+                        if not reconnected:
+                            logger.error(f"RTSP reconnect attempts exhausted for {stream_cfg.source}")
                             break
-                        else:
-                            print(f"RTSP reconnect attempt {attempt} failed.")
-                    if not reconnected:
-                        print("RTSP reconnect attempts exhausted; exiting loop.")
-                        break
-                    continue
-                print("Frame could not be read; exiting loop.")
-                break
+                        continue
+                    logger.error("Frame could not be read; exiting loop.")
+                    break
+            
+            if frame is None:
+                continue
 
             if frame_skip > 0:
                 skip_cursor = (skip_cursor + 1) % (frame_skip + 1)
@@ -175,7 +248,24 @@ def run(config_path: str | Path = "config.yaml") -> None:
             result = detector.process_frame(frame, fps)
 
             for event in result.events:
+                # Legacy webhook
                 webhook.send(event)
+                
+                # Async webhook + OP500 trigger (like fsdapp)
+                trigger_op500 = getattr(event, '_trigger_op500', False)
+                if stream_cfg.rtp_loopback_enabled:
+                    asyncio.run(maybe_alert(event, trigger_op500))
+                    
+                    # Trigger RTP streaming on detection
+                    if sr and stream_cfg.rtp_port:
+                        sr.trigger_rtp_stream()
+
+            # Send frame with detections to RTP if streaming is active
+            if sr and stream_cfg.rtp_loopback_enabled:
+                vis = result.frame
+                if hud:
+                    hud.draw(vis, result.tracks_view)
+                sr.send_frame_to_rtp(vis)
 
             if hud:
                 hud.draw(result.frame, result.tracks_view)
@@ -186,7 +276,10 @@ def run(config_path: str | Path = "config.yaml") -> None:
             if writer is not None:
                 writer.write(result.frame)
     finally:
-        cap.release()
+        if sr:
+            sr.close()
+        if cap:
+            cap.release()
         if writer is not None:
             writer.release()
         if hud:

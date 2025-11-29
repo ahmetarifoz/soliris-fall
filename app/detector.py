@@ -12,6 +12,7 @@ import cv2
 import numpy as np
 from ultralytics import YOLO
 
+from . import logger
 from .config import Config
 
 COCO_EDGES = [
@@ -68,7 +69,7 @@ class FrameResult:
 class FallDetector:
     def __init__(self, config: Config, camera_id: Optional[str] = None):
         self.cfg = config
-        self.camera_id = camera_id or str(config.streams[0])
+        self.camera_id = camera_id or config.streams[0].camera_id or config.streams[0].source
         self.model = YOLO(config.app.model_path)
         self.buffers: Dict[int, Deque[Dict[str, Any]]] = defaultdict(
             lambda: deque(maxlen=self.cfg.detect.temporal_window)
@@ -76,6 +77,25 @@ class FallDetector:
         self.track_state: Dict[int, Dict[str, Any]] = {}
         self.last_seen: Dict[int, float] = {}
         self.alert_until: Dict[int, float] = {}
+        
+        # Per-track cooldown timers (like fsdapp's per-class cooldown)
+        self.last_alert: Dict[int, float] = {}
+        
+        # OP500 integration
+        self.op500_enabled: bool = False
+        self.op500_base_url: Optional[str] = None
+        self.op500_rtp_port: Optional[int] = None
+        self.op500_rtp_auto_close_seconds: int = 120
+        
+        # RTP loopback state tracking
+        self.rtp_loopback_active: bool = False
+        self.last_detection_time: float = 0.0
+        
+        # Detection control flag
+        self.detection_enabled: bool = True
+        
+        # StreamReader reference (will be set externally)
+        self.stream_reader = None
 
     @staticmethod
     def _torso_angle(kp17: np.ndarray) -> float:
@@ -156,7 +176,75 @@ class FallDetector:
                     cv2.LINE_AA,
                 )
 
+    def _start_rtp_loopback(self) -> bool:
+        """Start RTP loopback - returns True if newly started, False if already active."""
+        if self.stream_reader and getattr(self.stream_reader, '_rtp_active', False):
+            self.rtp_loopback_active = True
+            return False  # Already active
+
+        if not self.op500_enabled or not self.op500_base_url or not self.op500_rtp_port:
+            return False
+
+        if not self.stream_reader:
+            return False
+
+        try:
+            self.stream_reader._start_rtp_sender()
+            if getattr(self.stream_reader, '_rtp_active', False) and self.stream_reader._rtp_proc:
+                print(f"RTP loopback started (port={self.op500_rtp_port})")
+                self.rtp_loopback_active = True
+                return True
+            else:
+                self.rtp_loopback_active = False
+                return False
+        except Exception as e:
+            print(f"RTP loopback start error: {e}")
+            self.rtp_loopback_active = False
+            return False
+
+    def _stop_rtp_loopback(self):
+        """Stop RTP loopback via OP500 sender API DELETE."""
+        if not self.op500_enabled or not self.op500_base_url or not self.op500_rtp_port:
+            return
+
+        if not self.rtp_loopback_active:
+            return
+
+        try:
+            import requests
+            url = f"{self.op500_base_url}detectors/sender/{self.op500_rtp_port}"
+            print(f"Stopping RTP loopback: DELETE {url}")
+            response = requests.delete(url, timeout=4)
+
+            if response.status_code in (200, 204):
+                self.rtp_loopback_active = False
+                if self.stream_reader:
+                    self.stream_reader._stop_rtp_sender()
+                print(f"RTP loopback stopped (port={self.op500_rtp_port})")
+            else:
+                self.rtp_loopback_active = False
+        except Exception as e:
+            print(f"RTP loopback stop error: {e}")
+
+    def _check_rtp_auto_close(self):
+        """Check if RTP loopback should auto-close due to no recent detections."""
+        if not self.rtp_loopback_active:
+            return
+
+        elapsed = time.time() - self.last_detection_time
+
+        if elapsed > self.op500_rtp_auto_close_seconds:
+            print(f"RTP auto-close triggered: no detection for {elapsed:.0f}s")
+            self._stop_rtp_loopback()
+
     def process_frame(self, frame: np.ndarray, fps: float) -> FrameResult:
+        # Check if detection is enabled
+        if not self.detection_enabled:
+            return FrameResult(frame=frame, tracks_view={}, events=[])
+
+        # RTP loopback auto-close check
+        self._check_rtp_auto_close()
+
         cfg = self.cfg.detect
         results = self.model.track(
             frame,
@@ -284,6 +372,20 @@ class FallDetector:
                     now - st.get("t_enter", now) >= cfg.candidate_alert_sec
                     and not st.get("candidate_notified", False)
                 ):
+                    # Check per-track cooldown (like fsdapp's per-class cooldown)
+                    last_alert_time = self.last_alert.get(tid, 0.0)
+                    if now - last_alert_time < cfg.cooldown_sec:
+                        remaining = cfg.cooldown_sec - (now - last_alert_time)
+                        logger.alert_cooldown(tid, remaining)
+                        continue  # Still in cooldown, skip
+                    
+                    # Start RTP loopback on detection
+                    rtp_just_started = self._start_rtp_loopback()
+                    self.last_detection_time = now
+                    
+                    # Log candidate alert
+                    logger.alert_candidate(tid, self.camera_id, ang_mean, conf)
+                    
                     event = FallEvent(
                         id=str(uuid.uuid4()),
                         track_id=int(tid),
@@ -296,7 +398,10 @@ class FallDetector:
                         camera_id=str(self.camera_id),
                         confidence=float(conf),
                     )
+                    # Add RTP trigger flag to event payload
+                    event._trigger_op500 = rtp_just_started
                     events.append(event)
+                    self.last_alert[tid] = now
                     st["candidate_notified"] = True
             elif state == "fallen":
                 elapsed_fallen = now - st.get("t_alarm", st.get("t_enter", now))
@@ -305,21 +410,33 @@ class FallDetector:
                     not st.get("fallen_notified", False)
                     and elapsed_fallen >= cfg.fallen_alert_sec
                 ):
-                    event = FallEvent(
-                        id=str(uuid.uuid4()),
-                        track_id=int(tid),
-                        angle_mean=float(round(float(ang_mean), 2)),
-                        velocity_blps=float(round(float(v_blps_mean), 3)),
-                        drop_rel=float(round(float(drop_rel), 3)),
-                        aspect_ratio=float(round(float(aspect_ratio), 3)),
-                        timestamp=float(now),
-                        status="fallen",
-                        camera_id=str(self.camera_id),
-                        confidence=float(conf),
-                    )
-                    events.append(event)
-                    self.alert_until[tid] = now + cfg.alert_hold
-                    st["fallen_notified"] = True
+                    # Check per-track cooldown
+                    last_alert_time = self.last_alert.get(tid, 0.0)
+                    if now - last_alert_time >= cfg.cooldown_sec:
+                        # Start RTP loopback on detection
+                        rtp_just_started = self._start_rtp_loopback()
+                        self.last_detection_time = now
+                        
+                        # Log fall detection
+                        logger.alert_fallen(tid, self.camera_id, ang_mean, conf)
+                        
+                        event = FallEvent(
+                            id=str(uuid.uuid4()),
+                            track_id=int(tid),
+                            angle_mean=float(round(float(ang_mean), 2)),
+                            velocity_blps=float(round(float(v_blps_mean), 3)),
+                            drop_rel=float(round(float(drop_rel), 3)),
+                            aspect_ratio=float(round(float(aspect_ratio), 3)),
+                            timestamp=float(now),
+                            status="fallen",
+                            camera_id=str(self.camera_id),
+                            confidence=float(conf),
+                        )
+                        event._trigger_op500 = rtp_just_started
+                        events.append(event)
+                        self.alert_until[tid] = now + cfg.alert_hold
+                        self.last_alert[tid] = now
+                        st["fallen_notified"] = True
                 if latch_ok and true_recover:
                     state = "recover"
                     st["t_enter"] = now
@@ -327,6 +444,8 @@ class FallDetector:
                     st["fallen_notified"] = False
             elif state == "recover":
                 if true_recover and (now - st["t_enter"] >= cfg.recover_sec):
+                    # Log recovery
+                    logger.alert_recovered(tid, self.camera_id)
                     state = "idle"
                     st["t_enter"] = now
                     st["candidate_notified"] = False

@@ -5,3 +5,4 @@ lap>=0.5.12
 torch>=2.2.0
 pyyaml>=6.0.0
 requests>=2.31.0
+httpx>=0.25.0

@@ -48,5 +48,38 @@ webhook:
   verify_ssl: true
   cooldown_seconds: 5.0
 
+# OP500 integration (optional)
+op500:
+  enabled: false
+  base_url: "http://localhost:8080/"
+  rtp_auto_close_seconds: 120  # Auto-close RTP after no detection for this duration
+
+# Ingest settings (like fsdapp)
+ingest:
+  backend: "ffmpeg"  # or "opencv"
+  ffmpeg:
+    hw: "cuda"  # or null for CPU
+    loglevel: "warning"
+    width: 1920
+    height: 1080
+    queue_size: 3
+    reconnect_seconds: 2.0
+
+# HUD settings (like fsdapp)
+hud:
+  fire_persistence_seconds: 30.0
+  alert_persistence_seconds: 30.0
+
+# Stream configurations (like fsdapp's streams list)
+# Each stream can override ingest settings or use "inherit" to use defaults
 streams:
-  - rtsp://USER:PASS@CAMERA_HOST:554/stream
+  - camera_id: "cam1"
+    source: "rtsp://USER:PASS@CAMERA_HOST:554/stream"
+    # backend: inherit  # Optional: override ingest.backend
+    # width: inherit    # Optional: override ingest.ffmpeg.width
+    # height: inherit   # Optional: override ingest.ffmpeg.height
+    # ffmpeg_hw: inherit  # Optional: override ingest.ffmpeg.hw
+    # queue_size: inherit  # Optional: override ingest.ffmpeg.queue_size
+    # reconnect_seconds: inherit  # Optional: override ingest.ffmpeg.reconnect_seconds
+    rtp_port: 10160  # RTP port for OP500 trigger mapping
+    rtp_loopback_enabled: false  # Enable RTP loopback (send frames back to RTP port)

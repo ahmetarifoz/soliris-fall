@@ -61,11 +61,61 @@ class WebhookSection:
 
 
 @dataclass(frozen=True)
+class Op500Section:
+    enabled: bool
+    base_url: Optional[str]
+    rtp_auto_close_seconds: int
+
+
+@dataclass(frozen=True)
+class FFmpegSection:
+    """FFmpeg backend settings (like fsdapp's FFmpegCfg)."""
+    hw: Optional[str]  # 'cuda' or None for CPU
+    loglevel: str
+    width: int
+    height: int
+    queue_size: int
+    reconnect_seconds: float
+
+
+@dataclass(frozen=True)
+class IngestSection:
+    """Ingest settings (like fsdapp's IngestCfg)."""
+    backend: str  # 'ffmpeg' or 'opencv'
+    ffmpeg: FFmpegSection
+
+
+@dataclass(frozen=True)
+class StreamSection:
+    """Per-stream configuration (like fsdapp's StreamCfg)."""
+    camera_id: str
+    source: str
+    backend: Optional[str]  # None = inherit from ingest
+    width: Optional[int]  # None = inherit from ingest.ffmpeg
+    height: Optional[int]
+    ffmpeg_hw: Optional[str]  # None = inherit from ingest.ffmpeg
+    queue_size: Optional[int]
+    reconnect_seconds: Optional[float]
+    rtp_port: Optional[int]  # RTP port for OP500 trigger mapping
+    rtp_loopback_enabled: bool  # Enable RTP loopback
+
+
+@dataclass(frozen=True)
+class HudSection:
+    """HUD settings (like fsdapp's HudCfg)."""
+    fire_persistence_seconds: float
+    alert_persistence_seconds: float
+
+
+@dataclass(frozen=True)
 class Config:
     app: AppSection
     detect: DetectSection
     webhook: WebhookSection
-    streams: List[str]
+    op500: Optional[Op500Section]
+    ingest: IngestSection
+    hud: HudSection
+    streams: List[StreamSection]  # Changed from List[str] to List[StreamSection] like fsdapp
 
 
 def _deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
@@ -165,9 +215,112 @@ def load_config(path: str | Path = "config.yaml") -> Config:
         cooldown_seconds=float(webhook_section.get("cooldown_seconds", 5.0)),
     )
 
-    streams = [str(s) for s in streams_section]
+    # OP500 configuration
+    op500_section = data.get("op500", {})
+    op500 = None
+    if op500_section:
+        op500 = Op500Section(
+            enabled=bool(op500_section.get("enabled", False)),
+            base_url=op500_section.get("base_url"),
+            rtp_auto_close_seconds=int(op500_section.get("rtp_auto_close_seconds", 120)),
+        )
 
-    return Config(app=app, detect=detect, webhook=webhook, streams=streams)
+    # Ingest configuration (like fsdapp)
+    ingest_section = data.get("ingest", {})
+    ffmpeg_section = ingest_section.get("ffmpeg", {})
+    ffmpeg = FFmpegSection(
+        hw=ffmpeg_section.get("hw", "cuda"),
+        loglevel=str(ffmpeg_section.get("loglevel", "warning")),
+        width=int(ffmpeg_section.get("width", 1920)),
+        height=int(ffmpeg_section.get("height", 1080)),
+        queue_size=int(ffmpeg_section.get("queue_size", 3)),
+        reconnect_seconds=float(ffmpeg_section.get("reconnect_seconds", 2.0)),
+    )
+    ingest = IngestSection(
+        backend=str(ingest_section.get("backend", "ffmpeg")),
+        ffmpeg=ffmpeg,
+    )
+
+    # HUD configuration (like fsdapp)
+    hud_section = data.get("hud", {})
+    hud = HudSection(
+        fire_persistence_seconds=float(hud_section.get("fire_persistence_seconds", 30.0)),
+        alert_persistence_seconds=float(hud_section.get("alert_persistence_seconds", 30.0)),
+    )
+
+    # Stream configurations (like fsdapp's List[StreamCfg])
+    streams = []
+    for sc in streams_section:
+        # Support both string format (legacy) and dict format (like fsdapp)
+        if isinstance(sc, str):
+            # Legacy format: just a source string
+            streams.append(StreamSection(
+                camera_id="",
+                source=sc,
+                backend=None,
+                width=None,
+                height=None,
+                ffmpeg_hw=None,
+                queue_size=None,
+                reconnect_seconds=None,
+                rtp_port=None,
+                rtp_loopback_enabled=False,
+            ))
+        else:
+            # Dict format like fsdapp
+            streams.append(StreamSection(
+                camera_id=str(sc.get("camera_id", "")),
+                source=str(sc.get("source", "")),
+                backend=sc.get("backend"),  # None = inherit
+                width=sc.get("width"),  # None = inherit
+                height=sc.get("height"),
+                ffmpeg_hw=sc.get("ffmpeg_hw"),
+                queue_size=sc.get("queue_size"),
+                reconnect_seconds=sc.get("reconnect_seconds"),
+                rtp_port=sc.get("rtp_port"),
+                rtp_loopback_enabled=bool(sc.get("rtp_loopback_enabled", False)),
+            ))
+
+    return Config(app=app, detect=detect, webhook=webhook, op500=op500, ingest=ingest, hud=hud, streams=streams)
 
 
-__all__ = ["Config", "load_config"]
+def resolve_stream_ingest(cfg: Config, s: StreamSection) -> Dict[str, Any]:
+    """
+    Resolve effective ingest settings for a single stream (like fsdapp's resolve_stream_ingest).
+    Returns: {
+      'backend': 'ffmpeg'|'opencv',
+      'width': int,
+      'height': int,
+      'ffmpeg_hw': 'cuda'|None,
+      'queue_size': int,
+      'reconnect_seconds': float,
+      'loglevel': str
+    }
+    """
+    backend = s.backend or cfg.ingest.backend
+    if backend == "ffmpeg":
+        base = cfg.ingest.ffmpeg
+        return {
+            "backend": "ffmpeg",
+            "width": s.width if s.width is not None else base.width,
+            "height": s.height if s.height is not None else base.height,
+            "ffmpeg_hw": s.ffmpeg_hw if s.ffmpeg_hw is not None else base.hw,
+            "queue_size": s.queue_size if s.queue_size is not None else base.queue_size,
+            "reconnect_seconds": s.reconnect_seconds if s.reconnect_seconds is not None else base.reconnect_seconds,
+            "loglevel": base.loglevel,
+        }
+    else:
+        # OpenCV backend - width/height still useful
+        base = cfg.ingest.ffmpeg
+        return {
+            "backend": "opencv",
+            "width": s.width if s.width is not None else base.width,
+            "height": s.height if s.height is not None else base.height,
+            "ffmpeg_hw": None,
+            "queue_size": s.queue_size if s.queue_size is not None else base.queue_size,
+            "reconnect_seconds": s.reconnect_seconds if s.reconnect_seconds is not None else base.reconnect_seconds,
+            "loglevel": base.loglevel,
+        }
+
+
+__all__ = ["Config", "load_config", "resolve_stream_ingest", "StreamSection"]
