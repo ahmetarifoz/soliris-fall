@@ -68,6 +68,14 @@ class Op500Section:
 
 
 @dataclass(frozen=True)
+class ApiSection:
+    """API server settings."""
+    enabled: bool
+    host: str
+    port: int
+
+
+@dataclass(frozen=True)
 class FFmpegSection:
     """FFmpeg backend settings (like fsdapp's FFmpegCfg)."""
     hw: Optional[str]  # 'cuda' or None for CPU
@@ -113,6 +121,7 @@ class Config:
     detect: DetectSection
     webhook: WebhookSection
     op500: Optional[Op500Section]
+    api: Optional[ApiSection]
     ingest: IngestSection
     hud: HudSection
     streams: List[StreamSection]  # Changed from List[str] to List[StreamSection] like fsdapp
@@ -248,6 +257,16 @@ def load_config(path: str | Path = "config.yaml") -> Config:
         alert_persistence_seconds=float(hud_section.get("alert_persistence_seconds", 30.0)),
     )
 
+    # API server configuration
+    api_section = data.get("api", {})
+    api = None
+    if api_section:
+        api = ApiSection(
+            enabled=bool(api_section.get("enabled", False)),
+            host=str(api_section.get("host", "0.0.0.0")),
+            port=int(api_section.get("port", 8000)),
+        )
+
     # Stream configurations (like fsdapp's List[StreamCfg])
     streams = []
     for sc in streams_section:
@@ -281,7 +300,7 @@ def load_config(path: str | Path = "config.yaml") -> Config:
                 rtp_loopback_enabled=bool(sc.get("rtp_loopback_enabled", False)),
             ))
 
-    return Config(app=app, detect=detect, webhook=webhook, op500=op500, ingest=ingest, hud=hud, streams=streams)
+    return Config(app=app, detect=detect, webhook=webhook, op500=op500, api=api, ingest=ingest, hud=hud, streams=streams)
 
 
 def resolve_stream_ingest(cfg: Config, s: StreamSection) -> Dict[str, Any]:

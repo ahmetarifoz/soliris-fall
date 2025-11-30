@@ -9,6 +9,7 @@ Bu ajan, YOLOv11 pose modeli kullanarak insan düşmelerini tespit eden bir vide
 fall/
 ├── app/                    # Ana uygulama modülleri
 │   ├── __init__.py         # Paket exports
+│   ├── api.py              # REST API server (FastAPI)
 │   ├── config.py           # Yapılandırma yönetimi (dataclasses)
 │   ├── detector.py         # Düşme algılama pipeline'ı
 │   ├── run.py              # Ana çalışma döngüsü
@@ -25,11 +26,25 @@ fall/
 
 ## Modül Açıklamaları
 
+### `app.api`
+REST API server (FastAPI). Detector'ı uzaktan kontrol etmek için standart endpoint'ler sağlar.
+- `GET /` - Health check
+- `GET /status` - Detection durumu (enabled, active_tracks, rtp_active)
+- `POST /enable` - Detection'ı etkinleştir
+- `POST /disable` - Detection'ı devre dışı bırak
+- `POST /reset-cooldown` - Cooldown timer'larını sıfırla
+- `GET /config` - Mevcut yapılandırmayı getir
+- `PUT /config` - Yapılandırmayı güncelle (runtime)
+- `GET /tracks` - Aktif track bilgilerini getir
+- `POST /rtp/start` - RTP streaming başlat
+- `POST /rtp/stop` - RTP streaming durdur
+
 ### `app.run`
 Ana çalışma döngüsü. Video kaynağını hazırlar, frame skip yönetir, HUD render eder ve düşme olaylarını alert sistemine yönlendirir.
 - `StreamReader` veya `cv2.VideoCapture` ile frame okuma
 - RTSP reconnect mantığı (exponential backoff)
 - OP500 trigger ve async webhook gönderimi
+- API server başlatma (opsiyonel)
 
 ### `app.detector`
 Düşme algılama pipeline'ı. Ultralytics tracking'i sarar, per-track state tutar ve fall state machine'i uygular.
@@ -75,6 +90,7 @@ Yapılandırma yönetimi. YAML dosyasından dataclass'lara parse.
 - `DetectSection`: Algılama parametreleri (threshold, cooldown, temporal window)
 - `WebhookSection`: Webhook URL, HMAC secret, timeout
 - `Op500Section`: OP500 entegrasyonu ayarları
+- `ApiSection`: API server ayarları (enabled, host, port)
 - `IngestSection`: Video ingest backend ayarları
 - `StreamSection`: Per-stream yapılandırma (camera_id, source, RTP port)
 - `HudSection`: HUD persistence ayarları

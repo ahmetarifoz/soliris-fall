@@ -54,6 +54,12 @@ op500:
   base_url: "http://localhost:8080/"
   rtp_auto_close_seconds: 120  # Auto-close RTP after no detection for this duration
 
+# API server settings
+api:
+  enabled: false  # Enable REST API for remote control
+  host: "0.0.0.0"
+  port: 8000
+
 # Ingest settings (like fsdapp)
 ingest:
   backend: "ffmpeg"  # or "opencv"

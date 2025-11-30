@@ -12,6 +12,7 @@ import cv2
 
 from . import logger
 from .alert import send_op500_trigger, send_webhook
+from .api import set_detector, start_api_thread
 from .config import AppSection, Config, load_config, resolve_stream_ingest
 from .detector import FallDetector
 from .hud import HUD
@@ -181,6 +182,13 @@ def run(config_path: str | Path = "config.yaml") -> None:
     if hud:
         cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
         cv2.resizeWindow(WINDOW_NAME, 1280, 720)
+
+    # Start API server if enabled
+    api_thread = None
+    if cfg.api and cfg.api.enabled:
+        set_detector(detector, cfg)
+        api_thread = start_api_thread(host=cfg.api.host, port=cfg.api.port)
+        logger.info(f"API server started on http://{cfg.api.host}:{cfg.api.port}")
 
     logger.info(f"Starting fall detection on {stream_cfg.source}")
     logger.info("Press ESC to quit.")
