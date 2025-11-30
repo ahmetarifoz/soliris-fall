@@ -1,7 +1,7 @@
 """Heads-up display for fall detection tracks."""
 
 import time
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 import cv2
 
@@ -15,6 +15,9 @@ COL = {
     "alert": (0, 0, 255),
     "badge": (60, 120, 240),
     "grid": (70, 70, 90),
+    "rtp_active": (0, 200, 100),
+    "rtp_inactive": (100, 100, 100),
+    "cooldown": (200, 150, 50),
 }
 
 STATE_RANK = {"fallen": 3, "candidate": 2, "recover": 1, "idle": 0}
@@ -62,11 +65,43 @@ class HUD:
     def __init__(self, max_tracks: int = 6):
         self.last_banner_t = 0.0
         self.max_tracks = max_tracks
+        
+        # RTP and cooldown state
+        self.rtp_active = False
+        self.rtp_port: Optional[int] = None
+        self.cooldown_remaining: Dict[int, float] = {}  # track_id -> remaining seconds
+        self.alert_cooldown_sec: float = 5.0  # Default alert trigger cooldown
+
+    def set_rtp_state(self, active: bool, port: Optional[int] = None):
+        """Update RTP streaming state."""
+        self.rtp_active = active
+        self.rtp_port = port
+
+    def set_cooldown(self, track_id: int, remaining: float):
+        """Update cooldown remaining for a track."""
+        if remaining > 0:
+            self.cooldown_remaining[track_id] = remaining
+        elif track_id in self.cooldown_remaining:
+            del self.cooldown_remaining[track_id]
+
+    def set_alert_cooldown(self, cooldown_sec: float):
+        """Set the alert trigger cooldown duration."""
+        self.alert_cooldown_sec = cooldown_sec
 
     def draw_header(self, frame, any_alert):
         h, w = frame.shape[:2]
         _round_rect(frame, 10, 10, w - 20, 50, 12, COL["panel"], fill=True)
         _put_text(frame, "FALL MONITOR", (24, 44), 0.9, COL["text"], 2)
+
+        # Draw RTP status indicator
+        rtp_x = 200
+        if self.rtp_active:
+            rtp_color = COL["rtp_active"]
+            rtp_text = f"RTP:{self.rtp_port}" if self.rtp_port else "RTP:ON"
+        else:
+            rtp_color = COL["rtp_inactive"]
+            rtp_text = "RTP:OFF"
+        _badge(frame, rtp_x, 16, rtp_text, rtp_color)
 
         x = w - 10
         legends = [
@@ -115,7 +150,12 @@ class HUD:
         }.get(state, COL["muted"])
 
         _put_text(frame, f"ID {tid}", (x + 14, y + 28), 0.7, COL["text"], 2)
-        _badge(frame, x + 100, y + 8, state, color)
+        badge_end_x, _ = _badge(frame, x + 100, y + 8, state, color)
+
+        # Draw cooldown indicator if track is in cooldown
+        cooldown = self.cooldown_remaining.get(tid, 0.0)
+        if cooldown > 0:
+            _badge(frame, badge_end_x + 4, y + 8, f"CD:{cooldown:.1f}s", COL["cooldown"])
 
         _put_text(
             frame, f"ang {info['angle']:.1f}°", (x + 14, y + 52), 0.55, COL["muted"], 1
@@ -141,6 +181,26 @@ class HUD:
         if info.get("alert", False):
             _badge(frame, x + w - 86, y + 8, "FALL", COL["alert"])
 
+    def draw_status_panel(self, frame):
+        """Draw status panel in bottom-right corner."""
+        fh, fw = frame.shape[:2]
+        panel_w, panel_h = 180, 60
+        x = fw - panel_w - 12
+        y = fh - panel_h - 12
+        
+        _round_rect(frame, x, y, panel_w, panel_h, 10, COL["panel"], fill=True)
+        
+        # RTP Status
+        rtp_color = COL["rtp_active"] if self.rtp_active else COL["rtp_inactive"]
+        rtp_text = f"RTP: {'ON' if self.rtp_active else 'OFF'}"
+        if self.rtp_active and self.rtp_port:
+            rtp_text = f"RTP: {self.rtp_port}"
+        _put_text(frame, rtp_text, (x + 10, y + 22), 0.5, rtp_color, 1)
+        
+        # Cooldown setting
+        cd_text = f"Alert CD: {self.alert_cooldown_sec:.1f}s"
+        _put_text(frame, cd_text, (x + 10, y + 45), 0.5, COL["muted"], 1)
+
     def draw(self, frame, tracks_dict: Dict[int, Dict[str, Any]]):
         filtered, _ = self._order_and_clip(tracks_dict)
 
@@ -149,6 +209,9 @@ class HUD:
 
         for i, (tid, info) in enumerate(filtered.items()):
             self.draw_track_card(frame, tid, info, i)
+
+        # Draw status panel
+        self.draw_status_panel(frame)
 
         for tid, info in filtered.items():
             if "box" not in info or info["box"] is None:

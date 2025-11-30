@@ -58,6 +58,9 @@ Legacy webhook client. Per-track cooldown ile HMAC imzalı HTTP POST.
 
 ### `app.hud`
 Görsel overlay ve telemetri kartları. Per-track bilgi panelleri, state badge'leri.
+- **RTP Status**: Header'da ve sağ alt köşede RTP durumu göstergesi (ON/OFF, port)
+- **Cooldown Indicator**: Track kartlarında per-track cooldown sayacı (CD:X.Xs)
+- **Status Panel**: Sağ alt köşede RTP durumu ve alert cooldown ayarı
 
 ### `app.logger`
 Merkezi loglama sistemi. Renkli konsol çıktısı, dosya logging desteği.

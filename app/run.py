@@ -169,6 +169,12 @@ def run(config_path: str | Path = "config.yaml") -> None:
     hud = HUD(max_tracks=cfg.app.max_tracks) if cfg.app.enable_hud else None
     webhook = WebhookClient(cfg.webhook)
 
+    # Configure HUD with RTP and cooldown settings
+    if hud:
+        hud.set_alert_cooldown(cfg.detect.cooldown_sec)
+        if stream_cfg.rtp_port:
+            hud.rtp_port = stream_cfg.rtp_port
+
     frame_skip = max(0, cfg.detect.frame_skip)
     skip_cursor = 0
 
@@ -259,6 +265,21 @@ def run(config_path: str | Path = "config.yaml") -> None:
                     # Trigger RTP streaming on detection
                     if sr and stream_cfg.rtp_port:
                         sr.trigger_rtp_stream()
+
+            # Update HUD with RTP state and cooldowns
+            if hud:
+                # Update RTP status
+                if sr:
+                    hud.set_rtp_state(
+                        active=getattr(sr, '_rtp_active', False),
+                        port=stream_cfg.rtp_port
+                    )
+                
+                # Update per-track cooldowns from detector
+                now = time.time()
+                for tid, last_alert_time in detector.last_alert.items():
+                    remaining = cfg.detect.cooldown_sec - (now - last_alert_time)
+                    hud.set_cooldown(tid, remaining)
 
             # Send frame with detections to RTP if streaming is active
             if sr and stream_cfg.rtp_loopback_enabled:
