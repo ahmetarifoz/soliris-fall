@@ -24,9 +24,7 @@ Thumbs.db
 out.mp4
 *.log
 
-# Local configuration overrides
-config.yaml
-config.local.yaml
+
 
 # Model weights and large assets
 models/
