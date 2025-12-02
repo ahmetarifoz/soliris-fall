@@ -8,13 +8,7 @@ httpx>=0.25.0
 fastapi>=0.109.0
 uvicorn>=0.27.0
 
-# PyTorch - CPU version (default)
-# pip install torch torchvision
-# --extra-index-url https://download.pytorch.org/whl/cpu
-# torch>=2.2.0
-# torchvision>=0.17.0
-
-# PyTorch - CUDA version
+# PyTorch with CUDA 12.1 support
 --extra-index-url https://download.pytorch.org/whl/cu121
 torch>=2.2.0
 torchvision>=0.17.0
