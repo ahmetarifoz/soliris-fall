@@ -172,7 +172,8 @@ def run(config_path: str | Path = "config.yaml") -> None:
     ingest_settings = resolve_stream_ingest(cfg, stream_cfg)
     
     # Lazy initialization - StreamReader/VideoCapture created when detection enabled
-    use_stream_reader = stream_cfg.rtp_loopback_enabled
+    # SDP/RTP sources require StreamReader (FFmpeg subprocess) for proper protocol_whitelist support
+    use_stream_reader = stream_cfg.rtp_loopback_enabled or is_sdp
     sr: Optional[StreamReader] = None
     cap: Optional[cv2.VideoCapture] = None
     fps = cfg.app.default_fps
