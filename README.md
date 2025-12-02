@@ -8,6 +8,8 @@ Real-time fall detection pipeline that ingests RTSP streams (or any OpenCV-compa
 - **Structured alerts** delivered over HTTP with signed payloads and explicit fall/candidate status.
 - **Custom HUD overlay** summarising per-track metrics in real time.
 - **Configurable thresholds** via YAML (sample provided in ).
+- **API-controlled detection** - Detection starts disabled by default, enable via REST API (`POST /enable`).
+- **Lazy stream initialization** - Stream reading only starts when detection is enabled, minimizing resource usage.
 
 ## Getting Started
 1. Install Python 3.10+ and create a virtual environment:

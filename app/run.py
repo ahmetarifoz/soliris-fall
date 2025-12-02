@@ -121,6 +121,33 @@ def _read_frame(
     return cap.read()
 
 
+def _create_disabled_frame(width: int, height: int):
+    """Create a blank frame showing detection disabled state."""
+    import numpy as np
+    frame = np.zeros((height, width, 3), dtype=np.uint8)
+    frame[:] = (30, 30, 30)  # Dark gray background
+    
+    # Draw "DETECTION DISABLED" text
+    text = "DETECTION DISABLED"
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    font_scale = 1.5
+    thickness = 3
+    text_size = cv2.getTextSize(text, font, font_scale, thickness)[0]
+    text_x = (width - text_size[0]) // 2
+    text_y = (height + text_size[1]) // 2
+    cv2.putText(frame, text, (text_x, text_y), font, font_scale, (100, 100, 100), thickness, cv2.LINE_AA)
+    
+    # Draw instruction
+    instruction = "Enable via API: POST /enable"
+    inst_scale = 0.8
+    inst_size = cv2.getTextSize(instruction, font, inst_scale, 2)[0]
+    inst_x = (width - inst_size[0]) // 2
+    inst_y = text_y + 50
+    cv2.putText(frame, instruction, (inst_x, inst_y), font, inst_scale, (80, 80, 80), 2, cv2.LINE_AA)
+    
+    return frame
+
+
 def run(config_path: str | Path = "config.yaml") -> None:
     cfg = load_config(config_path)
 
@@ -209,6 +236,7 @@ def run(config_path: str | Path = "config.yaml") -> None:
         logger.info(f"API server started on http://{cfg.api.host}:{cfg.api.port}")
 
     logger.info(f"Starting fall detection on {stream_cfg.source}")
+    logger.info("Detection starts DISABLED. Enable via API POST /enable")
     logger.info("Press ESC to quit.")
 
     async def maybe_alert(event, trigger_op500: bool):
@@ -226,9 +254,24 @@ def run(config_path: str | Path = "config.yaml") -> None:
 
     try:
         # Use StreamReader frames generator or OpenCV capture
-        frame_source = sr.frames() if sr else None
+        frame_source = None  # Lazy init - only start when detection enabled
         
         while True:
+            # Wait while detection is disabled (don't read from stream)
+            if not detector.detection_enabled:
+                # Show disabled state in HUD
+                if hud:
+                    cv2.imshow(WINDOW_NAME, _create_disabled_frame(1280, 720))
+                    if cv2.waitKey(100) & 0xFF == 27:
+                        break
+                else:
+                    time.sleep(0.1)
+                continue
+            
+            # Lazy init frame source when detection becomes enabled
+            if frame_source is None and sr:
+                frame_source = sr.frames()
+            
             if sr:
                 try:
                     frame = next(frame_source)

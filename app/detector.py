@@ -91,8 +91,8 @@ class FallDetector:
         self.rtp_loopback_active: bool = False
         self.last_detection_time: float = 0.0
         
-        # Detection control flag
-        self.detection_enabled: bool = True
+        # Detection control flag (starts disabled, enable via API)
+        self.detection_enabled: bool = False
         
         # StreamReader reference (will be set externally)
         self.stream_reader = None

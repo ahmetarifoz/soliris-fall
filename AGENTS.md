@@ -45,6 +45,7 @@ Ana çalışma döngüsü. Video kaynağını hazırlar, frame skip yönetir, HU
 - RTSP reconnect mantığı (exponential backoff)
 - OP500 trigger ve async webhook gönderimi
 - API server başlatma (opsiyonel)
+- **Lazy Stream Init**: Detection disabled iken stream okuma başlatılmaz, kaynak tüketimi minimize edilir
 
 ### `app.detector`
 Düşme algılama pipeline'ı. Ultralytics tracking'i sarar, per-track state tutar ve fall state machine'i uygular.
@@ -53,6 +54,7 @@ Düşme algılama pipeline'ı. Ultralytics tracking'i sarar, per-track state tut
 - **FrameResult**: Frame işleme sonucu (frame, tracks_view, events)
 - Per-track cooldown ve alert hold mantığı
 - RTP loopback state tracking
+- **Initial State**: Detection varsayılan olarak `disabled` başlar, API ile etkinleştirilmelidir
 
 ### `app.stream`
 Video stream okuyucu. FFmpeg veya OpenCV backend desteği, RTP loopback özelliği.
