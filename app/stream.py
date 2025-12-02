@@ -269,7 +269,7 @@ class StreamReader:
         if is_rtsp:
             args += ["-rtsp_transport", "tcp", "-rtsp_flags", "prefer_tcp", "-i", src]
         elif is_sdp_scheme or is_sdp_file:
-            args += ["-protocol_whitelist", "file,udp,rtp,tcp", "-i", sdp_path]
+            args += ["-protocol_whitelist", "file,udp,rtp,tcp,crypto,data", "-i", sdp_path]
         else:
             args += ["-re", "-i", src]
 

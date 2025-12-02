@@ -160,41 +160,60 @@ def run(config_path: str | Path = "config.yaml") -> None:
     # Resolve effective ingest settings (like fsdapp)
     ingest_settings = resolve_stream_ingest(cfg, stream_cfg)
     
-    # Use StreamReader if RTP loopback is enabled
+    # Lazy initialization - StreamReader/VideoCapture created when detection enabled
     use_stream_reader = stream_cfg.rtp_loopback_enabled
     sr: Optional[StreamReader] = None
     cap: Optional[cv2.VideoCapture] = None
-    
-    if use_stream_reader:
-        sr = StreamReader(
-            source=stream_cfg.source,
-            reconnect_delay=ingest_settings["reconnect_seconds"],
-            width=ingest_settings["width"],
-            height=ingest_settings["height"],
-            backend=ingest_settings["backend"],
-            ffmpeg_hw=ingest_settings["ffmpeg_hw"],
-            queue_size=ingest_settings["queue_size"],
-            rtp_output_port=stream_cfg.rtp_port,
-        )
-        # Configure OP500 if enabled
-        if cfg.op500 and cfg.op500.enabled:
-            sr.op500_enabled = True
-            sr.op500_base_url = cfg.op500.base_url
-        fps = cfg.app.default_fps
-    else:
-        cap = _create_capture(
-            source,
-            cfg.app.rtsp_backend,
-            is_rtsp=is_rtsp,
-            ffmpeg_options=ffmpeg_options,
-        )
-        if not cap.isOpened():
-            raise RuntimeError(f"Cannot open source: {stream_cfg.source}")
-        fps = cap.get(cv2.CAP_PROP_FPS) or cfg.app.default_fps
-
+    fps = cfg.app.default_fps
     writer = None
-    if cap:
-        writer, fps = _ensure_writer(cfg, cap)
+    
+    # Store config for lazy init
+    _stream_init_done = False
+    
+    def _init_stream():
+        """Initialize stream reader or video capture (called when detection enabled)."""
+        nonlocal sr, cap, fps, writer, _stream_init_done
+        if _stream_init_done:
+            return True
+        
+        if use_stream_reader:
+            sr_new = StreamReader(
+                source=stream_cfg.source,
+                reconnect_delay=ingest_settings["reconnect_seconds"],
+                width=ingest_settings["width"],
+                height=ingest_settings["height"],
+                backend=ingest_settings["backend"],
+                ffmpeg_hw=ingest_settings["ffmpeg_hw"],
+                queue_size=ingest_settings["queue_size"],
+                rtp_output_port=stream_cfg.rtp_port,
+            )
+            # Configure OP500 if enabled
+            if cfg.op500 and cfg.op500.enabled:
+                sr_new.op500_enabled = True
+                sr_new.op500_base_url = cfg.op500.base_url
+            sr = sr_new
+            # Link to detector
+            detector.stream_reader = sr
+            logger.info(f"StreamReader initialized for {stream_cfg.source}")
+        else:
+            cap_new = _create_capture(
+                source,
+                cfg.app.rtsp_backend,
+                is_rtsp=is_rtsp,
+                ffmpeg_options=ffmpeg_options,
+            )
+            if not cap_new.isOpened():
+                logger.error(f"Cannot open source: {stream_cfg.source}")
+                return False
+            cap = cap_new
+            fps = cap.get(cv2.CAP_PROP_FPS) or cfg.app.default_fps
+            writer_new, fps = _ensure_writer(cfg, cap)
+            if writer_new:
+                writer = writer_new
+            logger.info(f"VideoCapture initialized for {stream_cfg.source}")
+        
+        _stream_init_done = True
+        return True
 
     # Use camera_id from stream config, fallback to source
     camera_id = stream_cfg.camera_id or stream_cfg.source
@@ -207,10 +226,6 @@ def run(config_path: str | Path = "config.yaml") -> None:
         detector.op500_rtp_auto_close_seconds = cfg.op500.rtp_auto_close_seconds
         if stream_cfg.rtp_port:
             detector.op500_rtp_port = stream_cfg.rtp_port
-    
-    # Link stream reader to detector for RTP control
-    if sr:
-        detector.stream_reader = sr
     
     hud = HUD(max_tracks=cfg.app.max_tracks) if cfg.app.enable_hud else None
     webhook = WebhookClient(cfg.webhook)
@@ -267,6 +282,13 @@ def run(config_path: str | Path = "config.yaml") -> None:
                 else:
                     time.sleep(0.1)
                 continue
+            
+            # Lazy init stream when detection becomes enabled
+            if not _stream_init_done:
+                if not _init_stream():
+                    logger.error("Failed to initialize stream, retrying...")
+                    time.sleep(1.0)
+                    continue
             
             # Lazy init frame source when detection becomes enabled
             if frame_source is None and sr:
