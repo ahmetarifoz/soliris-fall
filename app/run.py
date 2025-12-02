@@ -35,6 +35,13 @@ def _resolve_source(source: Any) -> Any:
 def _is_rtsp_source(source: Any) -> bool:
     return isinstance(source, str) and source.lower().startswith("rtsp://")
 
+
+def _is_sdp_source(source: Any) -> bool:
+    """Check if source is an SDP file (RTP stream)."""
+    if not isinstance(source, str):
+        return False
+    return source.lower().endswith(".sdp") or source.lower().startswith("sdp://")
+
 def _build_ffmpeg_options(app_cfg: AppSection) -> Optional[str]:
     # Mevcut config'ten kopyala (None gelirse boş dict olsun)
     opts = dict(app_cfg.rtsp_ffmpeg_options or {})
@@ -68,19 +75,22 @@ def _create_capture(
     backend: str,
     *,
     is_rtsp: bool,
+    is_sdp: bool = False,
     ffmpeg_options: Optional[str],
 ) -> cv2.VideoCapture:
     previous_env = None
     applied_options = False
     use_ffmpeg = backend.lower() == "ffmpeg"
-    if is_rtsp and use_ffmpeg and ffmpeg_options:
+    needs_ffmpeg_opts = (is_rtsp or is_sdp) and use_ffmpeg and ffmpeg_options
+    
+    if needs_ffmpeg_opts:
         previous_env = os.environ.get(ENV_CAPTURE_OPTIONS)
         os.environ[ENV_CAPTURE_OPTIONS] = ffmpeg_options
         applied_options = True
     try:
         cap = (
             cv2.VideoCapture(source, cv2.CAP_FFMPEG)
-            if is_rtsp and use_ffmpeg
+            if needs_ffmpeg_opts
             else cv2.VideoCapture(source)
         )
     finally:
@@ -89,7 +99,7 @@ def _create_capture(
                 os.environ.pop(ENV_CAPTURE_OPTIONS, None)
             else:
                 os.environ[ENV_CAPTURE_OPTIONS] = previous_env
-    if is_rtsp and cap.isOpened():
+    if (is_rtsp or is_sdp) and cap.isOpened():
         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
     return cap
 
@@ -155,6 +165,7 @@ def run(config_path: str | Path = "config.yaml") -> None:
     stream_cfg = cfg.streams[0]
     source = _resolve_source(stream_cfg.source)
     is_rtsp = _is_rtsp_source(source)
+    is_sdp = _is_sdp_source(source)
     ffmpeg_options = _build_ffmpeg_options(cfg.app)
     
     # Resolve effective ingest settings (like fsdapp)
@@ -200,6 +211,7 @@ def run(config_path: str | Path = "config.yaml") -> None:
                 source,
                 cfg.app.rtsp_backend,
                 is_rtsp=is_rtsp,
+                is_sdp=is_sdp,
                 ffmpeg_options=ffmpeg_options,
             )
             if not cap_new.isOpened():
@@ -306,7 +318,7 @@ def run(config_path: str | Path = "config.yaml") -> None:
                     is_rtsp=is_rtsp,
                 )
                 if not ok or frame is None:
-                    if is_rtsp and cfg.app.rtsp_reconnect:
+                    if (is_rtsp or is_sdp) and cfg.app.rtsp_reconnect:
                         logger.stream_disconnected(stream_cfg.source)
                         cap.release()
                         reconnected = False
@@ -316,7 +328,8 @@ def run(config_path: str | Path = "config.yaml") -> None:
                             cap = _create_capture(
                                 source,
                                 cfg.app.rtsp_backend,
-                                is_rtsp=True,
+                                is_rtsp=is_rtsp,
+                                is_sdp=is_sdp,
                                 ffmpeg_options=ffmpeg_options,
                             )
                             if cap.isOpened():
