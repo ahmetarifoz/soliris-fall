@@ -257,28 +257,19 @@ def run(config_path: str | Path = "config.yaml") -> None:
         cv2.resizeWindow(WINDOW_NAME, 1280, 720)
 
     # Start API server if enabled
-    api_thread = None
     if cfg.api and cfg.api.enabled:
         set_detector(detector, cfg)
-        api_thread = start_api_thread(host=cfg.api.host, port=cfg.api.port)
+        start_api_thread(host=cfg.api.host, port=cfg.api.port)
         logger.info(f"API server started on http://{cfg.api.host}:{cfg.api.port}")
 
     logger.info(f"Starting fall detection on {stream_cfg.source}")
     logger.info("Detection starts DISABLED. Enable via API POST /enable")
     logger.info("Press ESC to quit.")
 
-    async def maybe_alert(event, trigger_op500: bool):
-        """Send webhook and optionally trigger OP500."""
+    async def maybe_alert(event, trigger_op500: bool = False):
+        """Send webhook notification for detection event."""
         payload = event.to_payload()
         await send_webhook(cfg.webhook.url, payload, cfg.webhook.hmac_secret or "")
-        
-        if trigger_op500 and cfg.op500 and cfg.op500.enabled and stream_cfg.rtp_port:
-            await send_op500_trigger(
-                base_url=cfg.op500.base_url,
-                port=stream_cfg.rtp_port,
-                event_type="FALL",
-                delay_sec=5
-            )
 
     try:
         # Use StreamReader frames generator or OpenCV capture
@@ -362,14 +353,24 @@ def run(config_path: str | Path = "config.yaml") -> None:
                 # Legacy webhook
                 webhook.send(event)
                 
-                # Async webhook + OP500 trigger (like fsdapp)
-                trigger_op500 = getattr(event, '_trigger_op500', False)
-                if stream_cfg.rtp_loopback_enabled:
-                    asyncio.run(maybe_alert(event, trigger_op500))
+                # RTP + OP500 flow (strict order per business rules):
+                # 1. If RTP not active: sender/add → FFmpeg start → OP500 trigger
+                # 2. If RTP active: extend duration, NO trigger
+                if stream_cfg.rtp_loopback_enabled and sr and stream_cfg.rtp_port:
+                    # trigger_rtp_stream returns True if newly started
+                    is_new_rtp_start = sr.trigger_rtp_stream()
                     
-                    # Trigger RTP streaming on detection
-                    if sr and stream_cfg.rtp_port:
-                        sr.trigger_rtp_stream()
+                    # OP500 trigger ONLY on new RTP start (not on extend)
+                    if is_new_rtp_start and cfg.op500 and cfg.op500.enabled:
+                        asyncio.run(send_op500_trigger(
+                            base_url=cfg.op500.base_url,
+                            port=stream_cfg.rtp_port,
+                            event_type="FALL",
+                            delay_sec=5
+                        ))
+                
+                # Async webhook (always send)
+                asyncio.run(maybe_alert(event, trigger_op500=False))
 
             # Update HUD with RTP state and cooldowns
             if hud:

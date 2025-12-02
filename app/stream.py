@@ -146,9 +146,10 @@ class StreamReader:
         self.rtp_output_port = rtp_output_port
         self._rtp_proc: Optional[subprocess.Popen] = None
         self._rtp_enabled = rtp_output_port is not None
-        self._rtp_active = False
-        self._rtp_last_frame_time = 0.0
-        self._rtp_stream_duration = 120.0  # Stream for 120 seconds after detection
+        self._rtp_active = False  # FFmpeg process running
+        self._rtp_registered = False  # OP500 sender registered
+        self._rtp_last_trigger_time = 0.0  # Last detection trigger time
+        self._rtp_stream_duration = 120.0  # Auto-close after 120s inactivity
         self._rtp_reconnect_attempts = 0
         self._rtp_max_reconnect_attempts = 30
         self._rtp_reconnect_delay = 3.0
@@ -156,7 +157,6 @@ class StreamReader:
         self._rtp_last_successful_send = 0.0
         self._rtp_health_check_interval = 5.0
         self._rtp_freeze_timeout = 10.0
-        self._rtp_registered = False
 
         # OP500 integration
         self.op500_base_url: Optional[str] = None
@@ -512,8 +512,36 @@ class StreamReader:
             self._rtp_proc = None
             self._rtp_active = False
 
+    def _unregister_sender_from_op500(self) -> bool:
+        """Unregister RTP sender from OP500 via DELETE."""
+        if not self.op500_enabled or not self.op500_base_url or not self.rtp_output_port:
+            return True
+
+        if not self._rtp_registered:
+            return True  # Already unregistered
+
+        try:
+            url = f"{self.op500_base_url.rstrip('/')}/detectors/sender/{self.rtp_output_port}"
+            _log.info(f"Unregistering RTP sender from OP500: DELETE {url}")
+            response = requests.delete(url, timeout=5)
+
+            if response.status_code in (200, 204):
+                _log.info("OP500 sender unregistration successful")
+                return True
+            else:
+                _log.error(f"OP500 sender unregistration failed: {response.status_code}")
+                return False
+
+        except Exception as e:
+            _log.error(f"Failed to unregister sender from OP500: {e}")
+            return False
+
     def _stop_rtp_sender(self):
-        """Stop the RTP sender process."""
+        """Stop the RTP sender process and unregister from OP500."""
+        if not self._rtp_active and not self._rtp_proc:
+            return
+
+        # First stop FFmpeg process
         if self._rtp_proc:
             try:
                 self._rtp_proc.stdin.close()
@@ -526,22 +554,42 @@ class StreamReader:
                     pass
             finally:
                 self._rtp_proc = None
-                self._rtp_active = False
-                self._rtp_registered = False
-                _log.info("RTP sender stopped")
 
-    def trigger_rtp_stream(self):
-        """Trigger RTP streaming for a duration after detection."""
+        # Then unregister from OP500 (MUST happen before setting _registered=False)
+        self._unregister_sender_from_op500()
+
+        # Finally reset state flags
+        self._rtp_active = False
+        self._rtp_registered = False
+        _log.info("RTP sender stopped and unregistered")
+
+    def trigger_rtp_stream(self) -> bool:
+        """Trigger RTP streaming for a duration after detection.
+        
+        Returns:
+            True if RTP was newly started (first trigger), False if already active (extend).
+        """
         if not self._rtp_enabled:
-            return
+            return False
 
+        is_new_start = False
+
+        # If not active, start RTP (sender/add + FFmpeg + trigger)
         if not self._rtp_active or not self._rtp_proc:
             self._start_rtp_sender()
+            is_new_start = True
+            _log.info(f"RTP stream started (new trigger, duration: {self._rtp_stream_duration}s)")
+        else:
+            # Already active - just extend duration, NO trigger
+            _log.debug(f"RTP stream extended (already active, duration: {self._rtp_stream_duration}s)")
 
-        self._rtp_last_frame_time = time.time()
+        # Update trigger time to extend stream duration
+        self._rtp_last_trigger_time = time.time()
+        
         if self._rtp_active and self._rtp_proc:
             self._rtp_reconnect_attempts = 0
-            _log.debug(f"RTP stream triggered (duration: {self._rtp_stream_duration}s)")
+
+        return is_new_start
 
     def _check_rtp_health(self):
         """Check RTP stream health - restart if frozen."""
@@ -574,10 +622,13 @@ class StreamReader:
             if current_time - self._rtp_last_successful_send > self._rtp_health_check_interval:
                 self._check_rtp_health()
 
-        if current_time - self._rtp_last_frame_time > self._rtp_stream_duration:
-            _log.info("RTP stream timeout, stopping sender")
-            self._stop_rtp_sender()
-            return
+        # Auto-stop check: if no trigger for stream_duration, stop RTP
+        if self._rtp_last_trigger_time > 0:
+            elapsed = current_time - self._rtp_last_trigger_time
+            if elapsed > self._rtp_stream_duration:
+                _log.info(f"RTP auto-stop: no detection for {elapsed:.0f}s (threshold={self._rtp_stream_duration}s)")
+                self._stop_rtp_sender()
+                return
 
         if not self._rtp_proc:
             return

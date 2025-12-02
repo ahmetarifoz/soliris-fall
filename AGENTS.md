@@ -146,16 +146,54 @@ streams:
     rtp_loopback_enabled: true
 ```
 
+## RTP + OP500 State Machine
+
+### Initial State
+```
+_active = False
+_registered = False
+_process = None
+```
+
+### Detection Flow (İş Kuralları)
+1. **Detection gerçekleştiğinde** → Cooldown kontrol edilir
+2. **Cooldown aktifse** → Hiçbir işlem yapılmaz (RTP tetiklenmez, OP500 gönderilmez)
+3. **Detection valid ise**:
+   - `trigger_rtp_stream()` çağrılır
+   - RTP aktif değilse:
+     - `sender/add` → OP500'e kayıt (`POST /detectors/sender/add`)
+     - FFmpeg process başlatılır
+     - `_registered = True`, `_active = True`
+     - OP500 trigger gönderilir (`POST /trigger/<port>?type=FALL`)
+   - RTP zaten aktifse:
+     - Sadece süre uzatılır (`_rtp_last_trigger_time` güncellenir)
+     - **Trigger gönderilmez**
+
+### Auto-Stop (120s inactivity)
+```
+if now - _last_trigger_time > stream_duration:
+    FFmpeg durdurulur
+    sender/delete yapılır (DELETE /detectors/sender/<port>)
+    _registered = False
+    _active = False
+```
+
+### Yeni Detection (Auto-stop sonrası)
+State: `_active=False, _registered=False`
+→ `sender/add` yapılır → RTP başlar → OP500 trigger gönderilir
+
 ## Event Flow
 
 1. `app.run` yapılandırmayı yükler, `FallDetector` ve `StreamReader` başlatır
-2. Her frame `detector.process_frame()` ile işlenir → `FrameResult` döner
-3. `FrameResult.events` boş değilse:
+2. Detection başlangıçta **disabled**, API ile etkinleştirilir (`POST /enable`)
+3. Her frame `detector.process_frame()` ile işlenir → `FrameResult` döner
+4. `FrameResult.events` boş değilse:
    - Legacy webhook client'a gönderilir
-   - Async webhook + OP500 trigger tetiklenir
-   - RTP loopback başlatılır (eğer etkinse)
-4. HUD overlay frame üzerine çizilir
-5. Track'ler `detect.prune_sec` süresince görünür kalır
+   - RTP trigger: `sr.trigger_rtp_stream()` → True dönerse OP500 trigger
+   - Async webhook gönderilir
+5. HUD overlay frame üzerine çizilir
+6. RTP aktifse frame'ler `sr.send_frame_to_rtp()` ile gönderilir
+7. Auto-stop kontrolü her frame'de yapılır
 
 ## Log Çıktısı Örnekleri
 
