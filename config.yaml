@@ -1,7 +1,7 @@
 # Copy this file to config.yaml (or config.local.yaml) and fill in your environment specifics.
 app:
   model_path: models/yolo11m-pose.pt
-  device: 0  # or 0 for GPU
+  device: cuda  # or 0 for GPU
   enable_hud: true
   save_path: out.mp4
   default_fps: 25
@@ -20,7 +20,7 @@ app:
     analyzeduration: 0
 
 detect:
-  conf: 0.16
+  conf: 0.30
   iou: 0.55
   track_persist: true
   confirm_sec: 0.2
@@ -50,8 +50,8 @@ webhook:
 
 # OP500 integration (optional)
 op500:
-  enabled: false
-  base_url: "http://localhost:8080/"
+  enabled: true
+  base_url: "http://10.40.240.80:8884/api/v1/"
   rtp_auto_close_seconds: 120  # Auto-close RTP after no detection for this duration
 
 # API server settings
@@ -66,8 +66,8 @@ ingest:
   ffmpeg:
     hw: "cuda"  # or null for CPU
     loglevel: "warning"
-    width: 1920
-    height: 1080
+    width: 1280
+    height: 720
     queue_size: 3
     reconnect_seconds: 2.0
 
@@ -81,4 +81,4 @@ streams:
   - camera_id: "cam1"
     source: streams/cam1.sdp
     rtp_port: 10160
-    rtp_loopback_enabled: false
+    rtp_loopback_enabled: true
