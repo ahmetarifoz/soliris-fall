@@ -242,9 +242,6 @@ class FallDetector:
         if not self.detection_enabled:
             return FrameResult(frame=frame, tracks_view={}, events=[])
 
-        # RTP loopback auto-close check
-        self._check_rtp_auto_close()
-
         cfg = self.cfg.detect
         results = self.model.track(
             frame,
@@ -379,11 +376,7 @@ class FallDetector:
                         logger.alert_cooldown(tid, remaining)
                         continue  # Still in cooldown, skip
                     
-                    # Start RTP loopback on detection
-                    rtp_just_started = self._start_rtp_loopback()
-                    self.last_detection_time = now
-                    
-                    # Log candidate alert
+                    # Log candidate alert (cooldown dışı ilk candidate)
                     logger.alert_candidate(tid, self.camera_id, ang_mean, conf)
                     
                     event = FallEvent(
@@ -398,8 +391,6 @@ class FallDetector:
                         camera_id=str(self.camera_id),
                         confidence=float(conf),
                     )
-                    # Add RTP trigger flag to event payload
-                    event._trigger_op500 = rtp_just_started
                     events.append(event)
                     self.last_alert[tid] = now
                     st["candidate_notified"] = True
@@ -413,11 +404,7 @@ class FallDetector:
                     # Check per-track cooldown
                     last_alert_time = self.last_alert.get(tid, 0.0)
                     if now - last_alert_time >= cfg.cooldown_sec:
-                        # Start RTP loopback on detection
-                        rtp_just_started = self._start_rtp_loopback()
-                        self.last_detection_time = now
-                        
-                        # Log fall detection
+                        # Log fall detection (cooldown dışı ilk fallen)
                         logger.alert_fallen(tid, self.camera_id, ang_mean, conf)
                         
                         event = FallEvent(
@@ -432,7 +419,6 @@ class FallDetector:
                             camera_id=str(self.camera_id),
                             confidence=float(conf),
                         )
-                        event._trigger_op500 = rtp_just_started
                         events.append(event)
                         self.alert_until[tid] = now + cfg.alert_hold
                         self.last_alert[tid] = now
