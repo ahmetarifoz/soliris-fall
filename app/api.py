@@ -6,6 +6,7 @@ import threading
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 # Will be set by run.py when starting the API
@@ -93,6 +94,15 @@ app = FastAPI(
     title="Fall Detection API",
     version="1.0",
     description="REST API for controlling fall detection system"
+)
+
+# CORS middleware - allow all origins including localhost:5173
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Tüm origin'lere izin ver
+    allow_credentials=True,
+    allow_methods=["*"],  # GET, POST, PUT, DELETE, OPTIONS vs.
+    allow_headers=["*"],  # Tüm header'lara izin ver
 )
 
 
