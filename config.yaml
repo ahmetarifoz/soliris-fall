@@ -58,7 +58,7 @@ op500:
 api:
   enabled: true
   host: "0.0.0.0"
-  port: 8000
+  port: 8003
 
 # Ingest settings (like fsdapp)
 ingest:
@@ -79,6 +79,6 @@ hud:
 # Stream configurations (like fsdapp's streams list)
 streams:
   - camera_id: "cam1"
-    source: "rtsp://admin:admin@192.168.5.190:554/main"
+    source: streams/cam1.sdp
     rtp_port: 10160
     rtp_loopback_enabled: false

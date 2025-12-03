@@ -1,0 +1,9 @@
+v=0
+o=- 0 0 IN IP4 10.40.68.51
+s=RTP H264
+c=IN IP4 10.40.68.51
+t=0 0
+m=video 10160 RTP/AVP 127
+a=rtpmap:127 H264/90000
+a=fmtp:127 packetization-mode=1
+a=recvonly

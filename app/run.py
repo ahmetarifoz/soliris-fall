@@ -35,14 +35,32 @@ def _resolve_source(source: Any) -> Any:
 def _is_rtsp_source(source: Any) -> bool:
     return isinstance(source, str) and source.lower().startswith("rtsp://")
 
-
 def _build_ffmpeg_options(app_cfg: AppSection) -> Optional[str]:
-    opts = dict(app_cfg.rtsp_ffmpeg_options)
+    # Mevcut config'ten kopyala (None gelirse boş dict olsun)
+    opts = dict(app_cfg.rtsp_ffmpeg_options or {})
+
+    # rtsp_transport yoksa config'ten ekle
     if app_cfg.rtsp_transport and "rtsp_transport" not in opts:
         opts["rtsp_transport"] = app_cfg.rtsp_transport
+
+    # RTP / SDP için zorunlu whitelist
+    # (FFmpeg varsayılan: file,crypto,data -> buraya rtp,udp,tcp ekliyoruz)
+    default_whitelist = "file,rtp,udp,tcp,crypto,data"
+    if "protocol_whitelist" in opts:
+        # Config'te varsa, required ile merge et
+        current = set(opts["protocol_whitelist"].split(","))
+        required = set(default_whitelist.split(","))
+        merged = ",".join(sorted(current | required))
+        opts["protocol_whitelist"] = merged
+    else:
+        opts["protocol_whitelist"] = default_whitelist
+
     if not opts:
         return None
+
+    # OPENCV_FFMPEG_CAPTURE_OPTIONS formatı: key=value|key2=value2|...
     return "|".join(f"{key}={value}" for key, value in opts.items())
+
 
 
 def _create_capture(
