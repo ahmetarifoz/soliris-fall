@@ -1,7 +1,7 @@
 # Copy this file to config.yaml (or config.local.yaml) and fill in your environment specifics.
 app:
   model_path: models/yolo11m-pose.pt
-  device: cpu  # or 0 for GPU
+  device: 0  # or 0 for GPU
   enable_hud: true
   save_path: out.mp4
   default_fps: 25
@@ -57,7 +57,7 @@ op500:
 # API server settings
 api:
   enabled: true
-  host: "0.0.0.0"
+  host: "10.40.240.79"
   port: 8003
 
 # Ingest settings (like fsdapp)
